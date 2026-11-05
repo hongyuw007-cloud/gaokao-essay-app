@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.vercel-global/
+.vercel/
+.git/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+tests/
+README.md
+screenshots/

@@ -1,0 +1,24 @@
+# 环境变量（含密钥，严禁提交）
+.env
+.vercel-global/
+.vercel/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+
+# 临时中间产物
+_report_extract.txt
