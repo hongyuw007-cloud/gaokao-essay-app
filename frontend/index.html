@@ -31,7 +31,7 @@
         var(--bg);
       font-family: "PingFang SC", "Microsoft YaHei", "Noto Serif SC", serif;
     }
-    button, input, textarea { font: inherit; }
+    button, input, textarea, select { font: inherit; }
     button { cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .55; }
     .shell { width: min(1240px, calc(100% - 32px)); margin: 24px auto 48px; }
@@ -235,7 +235,7 @@
       font-size: 13px;
       font-weight: 700;
     }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -245,8 +245,9 @@
       transition: border-color .16s ease, box-shadow .16s ease;
     }
     input { min-height: 43px; padding: 10px 12px; }
+    select { min-height: 43px; padding: 10px 12px; }
     textarea { min-height: 116px; padding: 14px; line-height: 1.7; resize: vertical; }
-    input:focus, textarea:focus {
+    input:focus, textarea:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(178, 58, 47, .09);
     }
@@ -390,6 +391,13 @@
       border-radius: 999px;
       font-size: 11px;
     }
+    .writing-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 13px;
+    }
+    .material-input { min-height: 96px; }
     .generate-btn { width: 100%; margin-top: 14px; padding: 13px; }
     .loading {
       display: flex;
@@ -420,7 +428,52 @@
     }
     .result-title { margin: 0; color: var(--accent-dark); font-size: 24px; }
     .result-meta { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .save-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .save-status.saved { color: var(--green); background: #e8f4ed; }
+    .save-status.unsaved { color: #9c5b16; background: #fff0d7; }
+    .save-status.saving { color: #6e5a3c; background: #f2eadc; }
     .result-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+    .strategy-card {
+      margin-top: 18px;
+      padding: 17px 18px;
+      border: 1px solid #ead9bc;
+      border-radius: 13px;
+      background: #fff8e9;
+    }
+    .strategy-card h3 {
+      margin: 0 0 13px;
+      color: var(--accent-dark);
+      font-size: 16px;
+    }
+    .strategy-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 18px;
+      margin: 0;
+    }
+    .strategy-item { min-width: 0; }
+    .strategy-item dt {
+      margin-bottom: 4px;
+      color: #8b6b3f;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .strategy-item dd {
+      margin: 0;
+      color: #514434;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .strategy-item-wide { grid-column: 1 / -1; }
     .essay {
       padding: 25px 8px 7px;
       white-space: pre-wrap;
@@ -490,8 +543,11 @@
       .header-actions { width: 100%; justify-content: flex-start; }
       .auth-intro, .auth-card, .profile-card, .history-card, .composer, .result-card { padding: 18px; }
       .form-row { grid-template-columns: 1fr; }
+      .writing-options { grid-template-columns: 1fr; }
       .result-head, .composer-head { flex-direction: column; }
       .result-actions { justify-content: flex-start; }
+      .strategy-grid { grid-template-columns: 1fr; }
+      .strategy-item-wide { grid-column: auto; }
       .essay { padding-left: 0; padding-right: 0; font-size: 15px; }
     }
   </style>
@@ -525,7 +581,7 @@
           <div class="feature"><span>01</span><span>专属账号与个人资料</span></div>
           <div class="feature"><span>02</span><span>作文历史与关键词搜索</span></div>
           <div class="feature"><span>03</span><span>收藏、复制与删除管理</span></div>
-          <div class="feature"><span>04</span><span>云端数据隔离与访问保护</span></div>
+          <div class="feature"><span>04</span><span>Supabase 数据隔离与访问保护</span></div>
         </div>
       </article>
 
@@ -623,12 +679,32 @@
           <div class="composer-head">
             <div>
               <h2>开始写作</h2>
-              <p>输入作文题目，AI 将按高考评分标准生成约 800 字范文。</p>
+              <p>输入题目与可选材料，并设置文体和目标字数，AI 将按高考评分标准生成范文。</p>
             </div>
             <span class="model-tag" id="modelTag">deepseek-chat</span>
           </div>
           <label for="topic">作文题目</label>
           <textarea id="topic" maxlength="500" placeholder="例如：论生逢其时 / 可为与有为 / 携手同一世界，青年共创未来……"></textarea>
+          <label for="material">作文材料（选填）</label>
+          <textarea class="material-input" id="material" maxlength="4000" placeholder="可粘贴题目所给材料；如果没有材料，可以留空。"></textarea>
+          <div class="writing-options">
+            <div>
+              <label for="genre">文体</label>
+              <select id="genre">
+                <option value="auto">自动判断</option>
+                <option value="argumentative">议论文</option>
+                <option value="narrative">记叙文</option>
+              </select>
+            </div>
+            <div>
+              <label for="targetWordCount">目标字数</label>
+              <select id="targetWordCount">
+                <option value="800">800 字</option>
+                <option value="900">900 字</option>
+                <option value="1000">1000 字</option>
+              </select>
+            </div>
+          </div>
           <button class="btn generate-btn" id="generateBtn" type="button">生成并保存作文</button>
           <div class="loading" id="loading" hidden><span class="spinner"></span><span>正在审题、构思与写作，请稍候…</span></div>
           <p class="error" id="generateError"></p>
@@ -639,13 +715,37 @@
             <div>
               <h2 class="result-title" id="resultTitle">作文标题</h2>
               <p class="result-meta" id="resultMeta"></p>
+              <span class="save-status" id="saveStatus"></span>
             </div>
             <div class="result-actions">
+              <button class="btn btn-quiet" id="retrySaveBtn" type="button" hidden>重新保存</button>
               <button class="btn btn-quiet" id="favoriteBtn" type="button">☆ 收藏</button>
               <button class="btn btn-quiet" id="copyBtn" type="button">复制全文</button>
+              <button class="btn btn-quiet" id="downloadBtn" type="button">下载 TXT</button>
               <button class="btn btn-quiet btn-danger" id="deleteBtn" type="button">删除</button>
             </div>
           </div>
+          <section class="strategy-card" id="strategyCard" hidden>
+            <h3>本次写作策略</h3>
+            <dl class="strategy-grid">
+              <div class="strategy-item">
+                <dt>中心立意</dt>
+                <dd id="strategyCentralIdea"></dd>
+              </div>
+              <div class="strategy-item">
+                <dt>文体选择</dt>
+                <dd id="strategyGenre"></dd>
+              </div>
+              <div class="strategy-item">
+                <dt>结构方式</dt>
+                <dd id="strategyStructure"></dd>
+              </div>
+              <div class="strategy-item strategy-item-wide">
+                <dt>写作建议</dt>
+                <dd id="strategyAdvice"></dd>
+              </div>
+            </dl>
+          </section>
           <article class="essay" id="essayText"></article>
         </section>
       </main>
@@ -1053,12 +1153,21 @@
       el('resultTitle').textContent = record.title || titleFromText(record.essay);
       const meta = [
         record.topic ? `题目：${record.topic}` : '',
-        record.word_count ? `约 ${record.word_count} 字` : '',
+        record.genre_label ? `文体：${record.genre_label}` : '',
+        record.word_check
+          ? `字数：目标 ${record.word_check.target}，实际 ${record.word_check.actual}（${wordCheckLabel(record.word_check)}）`
+          : (record.word_count ? `实际 ${record.word_count} 字` : ''),
+        record.length_revision?.attempted
+          ? `自动调整 ${record.length_revision.attempts?.length || 0} 次`
+          : '',
         record.created_at ? formatTime(record.created_at) : '刚刚生成',
       ].filter(Boolean);
       el('resultMeta').textContent = meta.join(' · ');
       el('essayText').textContent = record.essay || '';
+      renderStrategy(record.strategy);
       const saved = Boolean(record.id);
+      renderSaveStatus(saved, record.save_error);
+      el('retrySaveBtn').hidden = saved;
       el('favoriteBtn').disabled = !saved;
       el('deleteBtn').disabled = !saved;
       el('favoriteBtn').textContent = record.is_favorite ? '★ 已收藏' : '☆ 收藏';
@@ -1066,13 +1175,43 @@
       el('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
+    function renderSaveStatus(saved, detail = '') {
+      const status = el('saveStatus');
+      status.className = `save-status ${saved ? 'saved' : 'unsaved'}`;
+      status.textContent = saved
+        ? '✓ 已保存到个人作文历史'
+        : `! 尚未保存到 Supabase 数据库${detail ? `：${detail}` : '，请及时下载或重新保存'}`;
+    }
+
+    function renderStrategy(strategy) {
+      const card = el('strategyCard');
+      if (!strategy || !Object.values(strategy).some(Boolean)) {
+        card.hidden = true;
+        return;
+      }
+      el('strategyCentralIdea').textContent = strategy.central_idea || '未单独说明';
+      el('strategyGenre').textContent = strategy.genre || '未单独说明';
+      el('strategyStructure').textContent = strategy.structure || '未单独说明';
+      el('strategyAdvice').textContent = strategy.advice || '未单独说明';
+      card.hidden = false;
+    }
+
     function selectEssay(record) {
       el('topic').value = record.topic || '';
       showEssay(record);
     }
 
+    function wordCheckLabel(check) {
+      if (check?.status === 'short') return `偏少 ${Math.abs(check.difference)} 字`;
+      if (check?.status === 'long') return `偏多 ${Math.abs(check.difference)} 字`;
+      return '符合要求';
+    }
+
     async function generateEssay() {
       const topic = el('topic').value.trim();
+      const material = el('material').value.trim();
+      const genre = el('genre').value;
+      const targetWordCount = Number(el('targetWordCount').value);
       const button = el('generateBtn');
       const error = el('generateError');
       error.textContent = '';
@@ -1087,14 +1226,31 @@
       try {
         const data = await request('/api/generate', {
           method: 'POST',
-          body: JSON.stringify({ topic }),
+          body: JSON.stringify({
+            topic,
+            material,
+            genre,
+            target_word_count: targetWordCount,
+          }),
         });
-        const record = data.record || {
+        const genreLabels = {
+          auto: '自动判断',
+          argumentative: '议论文',
+          narrative: '记叙文',
+        };
+        const record = {
+          ...(data.record || {
           topic,
           title: titleFromText(data.essay),
           essay: data.essay,
-          word_count: 0,
+          word_count: data.word_check?.actual || 0,
           is_favorite: false,
+          }),
+          word_check: data.word_check,
+          length_revision: data.length_revision,
+          genre_label: genreLabels[genre],
+          strategy: data.strategy,
+          save_error: data.saved ? '' : (data.warning || 'Supabase 数据库保存失败'),
         };
         showEssay(record);
         if (data.saved) {
@@ -1136,6 +1292,41 @@
       }
     }
 
+    async function retrySaveEssay() {
+      const record = state.selectedEssay;
+      if (!record?.essay || record.id) return;
+      const button = el('retrySaveBtn');
+      button.disabled = true;
+      const status = el('saveStatus');
+      status.className = 'save-status saving';
+      status.textContent = '正在重新保存…';
+      try {
+        const data = await request('/api/essays', {
+          method: 'POST',
+          body: JSON.stringify({
+            topic: record.topic || '未命名题目',
+            essay: record.essay,
+          }),
+        });
+        const savedRecord = {
+          ...data.record,
+          word_check: record.word_check,
+          genre_label: record.genre_label,
+          strategy: record.strategy,
+          save_error: '',
+        };
+        showEssay(savedRecord);
+        await loadEssays();
+        showToast('作文已重新保存到个人历史');
+      } catch (error) {
+        record.save_error = error.message;
+        renderSaveStatus(false, error.message);
+        showToast(`重新保存失败：${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     async function deleteSelectedEssay() {
       const record = state.selectedEssay;
       if (!record?.id) return;
@@ -1172,6 +1363,36 @@
       }
     }
 
+    function downloadEssay() {
+      const record = state.selectedEssay;
+      if (!record?.essay) return;
+      const strategy = record.strategy;
+      const sections = [];
+      if (strategy && Object.values(strategy).some(Boolean)) {
+        sections.push([
+          '【本次写作策略】',
+          `中心立意：${strategy.central_idea || '未单独说明'}`,
+          `文体选择：${strategy.genre || '未单独说明'}`,
+          `结构方式：${strategy.structure || '未单独说明'}`,
+          `写作建议：${strategy.advice || '未单独说明'}`,
+        ].join('\n'));
+      }
+      sections.push(record.essay);
+      const blob = new Blob([`\ufeff${sections.join('\n\n')}`], {
+        type: 'text/plain;charset=utf-8',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeTitle = (record.title || '高考作文').replace(/[\\/:*?"<>|]/g, '_');
+      link.href = url;
+      link.download = `${safeTitle}.txt`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast('TXT 文件已下载');
+    }
+
     el('loginTab').addEventListener('click', () => setAuthMode('login'));
     el('registerTab').addEventListener('click', () => setAuthMode('register'));
     el('loginForm').addEventListener('submit', handleLogin);
@@ -1182,11 +1403,13 @@
     el('closeProfileBtn').addEventListener('click', () => el('profileDialog').close());
     el('cancelProfileBtn').addEventListener('click', () => el('profileDialog').close());
     el('generateBtn').addEventListener('click', generateEssay);
+    el('retrySaveBtn').addEventListener('click', retrySaveEssay);
     el('favoriteBtn').addEventListener('click', () => {
       if (state.selectedEssay) toggleFavorite(state.selectedEssay);
     });
     el('deleteBtn').addEventListener('click', deleteSelectedEssay);
     el('copyBtn').addEventListener('click', copyEssay);
+    el('downloadBtn').addEventListener('click', downloadEssay);
     el('historySearch').addEventListener('input', renderHistory);
 
     bootstrap();

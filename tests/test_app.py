@@ -95,11 +95,103 @@ class ApplicationTests(unittest.TestCase):
 
     @patch("backend.main.create_essay", return_value=RECORD)
     @patch("backend.main.get_user", return_value=USER)
+    def test_save_existing_essay(self, _get_user, _create_essay) -> None:
+        response = self.client.post(
+            "/api/essays",
+            headers=AUTH_HEADERS,
+            json={"topic": "论坚持", "essay": RECORD["essay"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["record"]["id"], RECORD["id"])
+        _create_essay.assert_called_once_with(
+            "test-token",
+            user_id=USER.id,
+            topic="论坚持",
+            title="行而不辍",
+            essay=RECORD["essay"],
+            word_count=11,
+        )
+
+    @patch("backend.main.create_essay", return_value=RECORD)
+    @patch("backend.main.get_user", return_value=USER)
     def test_generate_and_save(self, _get_user, _create_essay) -> None:
+        initial_model = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            "【写作策略】\n"
+                            "中心立意：坚持需要明确目标和持续行动\n"
+                            "文体选择：议论文\n"
+                            "结构方式：层进式论证\n"
+                            "写作建议：用具体事例支撑每一层观点\n\n"
+                            f"【作文正文】\n{RECORD['essay']}"
+                        )
+                    )
+                )
+            ]
+        )
+        revised_essay = "《行而不辍》\n\n" + "行" * 794
+        revised_model = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=revised_essay))]
+        )
+        with (
+            patch.object(main, "API_KEY", "test-key"),
+            patch.object(
+                main.client.chat.completions,
+                "create",
+                side_effect=[initial_model, revised_model],
+            ) as mock_create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                headers=AUTH_HEADERS,
+                json={
+                    "topic": "论坚持",
+                    "material": "坚持不是重复，而是在目标明确后的持续行动。",
+                    "genre": "argumentative",
+                    "target_word_count": 800,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["saved"])
+        self.assertEqual(response.json()["record"]["title"], "行而不辍")
+        self.assertEqual(response.json()["word_check"]["target"], 800)
+        self.assertEqual(response.json()["word_check"]["actual"], 800)
+        self.assertEqual(response.json()["word_check"]["status"], "ok")
+        self.assertTrue(response.json()["length_revision"]["attempted"])
+        self.assertTrue(response.json()["length_revision"]["applied"])
+        self.assertEqual(len(response.json()["length_revision"]["attempts"]), 1)
+        self.assertEqual(
+            response.json()["strategy"]["central_idea"],
+            "坚持需要明确目标和持续行动",
+        )
+        self.assertEqual(response.json()["strategy"]["structure"], "层进式论证")
+        self.assertEqual(_create_essay.call_args.kwargs["essay"], revised_essay)
+        self.assertEqual(mock_create.call_count, 2)
+
+        model_request = mock_create.call_args_list[0].kwargs
+        user_prompt = model_request["messages"][1]["content"]
+        self.assertIn("作文材料：坚持不是重复", user_prompt)
+        self.assertIn("文体要求：议论文", user_prompt)
+        self.assertIn("目标字数：约 800 字", user_prompt)
+
+        revision_prompt = mock_create.call_args_list[1].kwargs["messages"][1]["content"]
+        self.assertIn("程序允许范围：750～850 字", revision_prompt)
+        self.assertIn("至少增加约 769 个有效汉字", revision_prompt)
+        self.assertIn("以约 830 字为写作目标", revision_prompt)
+        self.assertIn("只输出修订后的完整作文正文", revision_prompt)
+
+    @patch("backend.main.create_essay", return_value=RECORD)
+    @patch("backend.main.get_user", return_value=USER)
+    def test_generate_does_not_revise_acceptable_length(
+        self, _get_user, _create_essay
+    ) -> None:
+        acceptable_essay = "《行而不辍》\n\n" + "行" * 794
         fake_model = SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content=RECORD["essay"])
+                    message=SimpleNamespace(content=f"【作文正文】\n{acceptable_essay}")
                 )
             ]
         )
@@ -109,16 +201,81 @@ class ApplicationTests(unittest.TestCase):
                 main.client.chat.completions,
                 "create",
                 return_value=fake_model,
-            ),
+            ) as mock_create,
         ):
             response = self.client.post(
                 "/api/generate",
                 headers=AUTH_HEADERS,
-                json={"topic": "论坚持"},
+                json={"topic": "论坚持", "target_word_count": 800},
             )
+
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["saved"])
-        self.assertEqual(response.json()["record"]["title"], "行而不辍")
+        self.assertEqual(response.json()["word_check"]["status"], "ok")
+        self.assertFalse(response.json()["length_revision"]["attempted"])
+        self.assertEqual(mock_create.call_count, 1)
+
+    @patch("backend.main.create_essay", return_value=RECORD)
+    @patch("backend.main.get_user", return_value=USER)
+    def test_generate_can_correct_an_overlong_first_revision(
+        self, _get_user, _create_essay
+    ) -> None:
+        initial_model = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="《行》\n\n" + "行" * 5))]
+        )
+        overlong_essay = "《行而不辍》\n\n" + "行" * 894
+        overlong_model = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=overlong_essay))]
+        )
+        acceptable_essay = "《行而不辍》\n\n" + "行" * 794
+        acceptable_model = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=acceptable_essay))]
+        )
+        with (
+            patch.object(main, "API_KEY", "test-key"),
+            patch.object(
+                main.client.chat.completions,
+                "create",
+                side_effect=[initial_model, overlong_model, acceptable_model],
+            ) as mock_create,
+        ):
+            response = self.client.post(
+                "/api/generate",
+                headers=AUTH_HEADERS,
+                json={"topic": "论坚持", "target_word_count": 800},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["word_check"]["actual"], 800)
+        self.assertEqual(response.json()["word_check"]["status"], "ok")
+        attempts = response.json()["length_revision"]["attempts"]
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]["status"], "long")
+        self.assertEqual(attempts[1]["status"], "ok")
+        self.assertEqual(mock_create.call_count, 3)
+
+    @patch("backend.main.get_user", return_value=USER)
+    def test_generate_rejects_invalid_target_word_count(self, _get_user) -> None:
+        response = self.client.post(
+            "/api/generate",
+            headers=AUTH_HEADERS,
+            json={"topic": "论坚持", "target_word_count": 500},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_model_output_without_markers_falls_back_to_essay(self) -> None:
+        strategy, essay = main._parse_model_output(RECORD["essay"])
+        self.assertIsNone(strategy)
+        self.assertEqual(essay, RECORD["essay"])
+
+    def test_word_count_uses_composition_grid_cells(self) -> None:
+        self.assertEqual(main._count_words("《题》\n正文，继续。"), 9)
+
+    def test_model_output_keeps_essay_when_strategy_marker_is_missing(self) -> None:
+        strategy, essay = main._parse_model_output(
+            f"中心立意：测试\n【作文正文】\n{RECORD['essay']}"
+        )
+        self.assertIsNone(strategy)
+        self.assertEqual(essay, RECORD["essay"])
 
     @patch("backend.main.update_essay")
     @patch("backend.main.get_user", return_value=USER)

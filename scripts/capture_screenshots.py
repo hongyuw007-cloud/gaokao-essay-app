@@ -75,8 +75,9 @@ def main() -> None:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
-    parser.add_argument("--port", type=int, default=9223)
+    parser.add_argument("--port", type=int, default=9333)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--existing-only", action="store_true")
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -134,32 +135,71 @@ def main() -> None:
                 break
         else:
             raise RuntimeError("The authenticated application did not finish loading")
+
+        if args.existing_only:
+            for _ in range(30):
+                time.sleep(0.5)
+                if devtools.evaluate("state.essays.length > 0"):
+                    break
+            else:
+                raise RuntimeError("No existing essay was found for screenshots")
+            refreshed = devtools.evaluate(
+                """
+                (() => {
+                  selectEssay(state.essays[0]);
+                  el('resultCard').scrollIntoView({block: 'start', behavior: 'instant'});
+                  return {
+                    id: state.selectedEssay.id,
+                    title: state.selectedEssay.title,
+                    wordCount: state.selectedEssay.word_count,
+                    essayCount: state.essays.length,
+                  };
+                })()
+                """
+            )
+            time.sleep(1)
+            devtools.screenshot(args.output / "result.png")
+            devtools.evaluate("window.scrollTo({top: 0, behavior: 'instant'});")
+            time.sleep(1)
+            devtools.screenshot(args.output / "history.png")
+            print(json.dumps(refreshed, ensure_ascii=False))
+            return
+
+        devtools.evaluate(
+            """
+            (() => {
+              el('topic').value = '阅读下面的材料，根据要求写作';
+              el('material').value = '青年既要仰望星空，也要脚踏实地。面对时代机遇，应如何把个人理想融入社会发展？';
+              el('genre').value = 'argumentative';
+              el('targetWordCount').value = '800';
+            })()
+            """
+        )
         devtools.screenshot(args.output / "home.png")
 
         generated = devtools.evaluate(
             """
             (async () => {
-              const response = await fetch('/api/generate', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${state.session.access_token}`
-                },
-                body: JSON.stringify({topic: '论坚持与成长'})
-              });
-              const data = await response.json();
-              if (!response.ok || !data.saved) {
-                throw new Error(data.detail || data.warning || 'generate failed');
+              await generateEssay();
+              if (!state.selectedEssay?.essay) {
+                throw new Error(el('generateError').textContent || 'generate failed');
               }
-              showEssay(data.record);
-              await loadEssays();
-              return {id: data.record.id, title: data.record.title};
+              return {
+                id: state.selectedEssay.id || null,
+                title: state.selectedEssay.title,
+                saved: Boolean(state.selectedEssay.id),
+                strategyVisible: !el('strategyCard').hidden,
+                wordMeta: el('resultMeta').textContent,
+                lengthRevision: state.selectedEssay.length_revision || null,
+              };
             })()
             """,
             await_promise=True,
         )
         time.sleep(2)
         devtools.screenshot(args.output / "result.png")
+        devtools.evaluate("window.scrollTo({top: 0, behavior: 'instant'});")
+        time.sleep(1)
         devtools.screenshot(args.output / "history.png")
         print(json.dumps(generated, ensure_ascii=False))
     finally:

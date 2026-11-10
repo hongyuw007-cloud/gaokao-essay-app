@@ -21,7 +21,11 @@ from pydantic import BaseModel, Field
 load_dotenv()
 
 try:
-    from .prompt import SYSTEM_PROMPT, build_user_prompt
+    from .prompt import (
+        SYSTEM_PROMPT,
+        build_length_revision_prompt,
+        build_user_prompt,
+    )
     from .supabase_service import (
         AuthUser,
         SupabaseAPIError,
@@ -39,7 +43,7 @@ try:
         update_user,
     )
 except ImportError:  # Supports `cd backend && uvicorn main:app`.
-    from prompt import SYSTEM_PROMPT, build_user_prompt
+    from prompt import SYSTEM_PROMPT, build_length_revision_prompt, build_user_prompt
     from supabase_service import (
         AuthUser,
         SupabaseAPIError,
@@ -77,6 +81,9 @@ app.add_middleware(
 
 class GenerateRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=500)
+    material: str = Field(default="", max_length=4000)
+    genre: Literal["auto", "argumentative", "narrative"] = "auto"
+    target_word_count: int = Field(default=800, ge=600, le=1200)
 
 
 class AuthRequest(BaseModel):
@@ -98,6 +105,11 @@ class ProfileRequest(BaseModel):
 class EssayPatchRequest(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     is_favorite: bool
+
+
+class EssayCreateRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=500)
+    essay: str = Field(min_length=1, max_length=20000)
 
 
 @dataclass(frozen=True)
@@ -186,9 +198,65 @@ def _title_from_essay(essay: str) -> str:
 
 
 def _count_words(text: str) -> int:
-    chinese = len(re.findall(r"[\u3400-\u9fff]", text))
-    words = len(re.findall(r"[A-Za-z]+", text))
-    return chinese + words
+    """Count occupied composition-grid cells; whitespace does not occupy a cell."""
+    return len(re.findall(r"\S", text))
+
+
+def _word_check(actual: int, target: int) -> dict[str, int | bool | str]:
+    """Return a deterministic check instead of relying on model self-reporting."""
+    minimum = max(1, target - 50)
+    maximum = target + 50
+    if actual < minimum:
+        status = "short"
+    elif actual > maximum:
+        status = "long"
+    else:
+        status = "ok"
+    return {
+        "target": target,
+        "actual": actual,
+        "minimum": minimum,
+        "maximum": maximum,
+        "difference": actual - target,
+        "passed": status == "ok",
+        "status": status,
+    }
+
+
+def _parse_model_output(content: str) -> tuple[dict[str, str] | None, str]:
+    """Split the learning-oriented strategy summary from the saved essay."""
+    text = content.strip()
+    strategy_marker = "【写作策略】"
+    essay_marker = "【作文正文】"
+    if essay_marker not in text:
+        return None, text
+
+    strategy_block, essay = text.split(essay_marker, 1)
+    essay = essay.strip()
+    if not essay:
+        return None, text
+    if strategy_marker not in strategy_block:
+        return None, essay
+    strategy_block = strategy_block.split(strategy_marker, 1)[1].strip()
+
+    labels = {
+        "central_idea": "中心立意",
+        "genre": "文体选择",
+        "structure": "结构方式",
+        "advice": "写作建议",
+    }
+    strategy: dict[str, str] = {}
+    for line in strategy_block.splitlines():
+        clean_line = line.strip()
+        for key, label in labels.items():
+            match = re.match(rf"^{re.escape(label)}[：:]\s*(.+)$", clean_line)
+            if match:
+                strategy[key] = match.group(1).strip()
+                break
+
+    if not strategy:
+        return None, essay
+    return strategy, essay
 
 
 @app.get("/api/health")
@@ -293,6 +361,7 @@ def generate(
         )
 
     topic = req.topic.strip()
+    material = req.material.strip()
     if not topic:
         raise HTTPException(status_code=400, detail="作文题目不能为空")
 
@@ -301,7 +370,15 @@ def generate(
             model=MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_prompt(topic)},
+                {
+                    "role": "user",
+                    "content": build_user_prompt(
+                        topic,
+                        material=material,
+                        genre=req.genre,
+                        target_word_count=req.target_word_count,
+                    ),
+                },
             ],
             temperature=0.8,
             max_tokens=2048,
@@ -309,12 +386,87 @@ def generate(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"调用大模型失败：{exc}") from exc
 
-    essay = response.choices[0].message.content or ""
-    if not essay.strip():
+    model_output = response.choices[0].message.content or ""
+    if not model_output.strip():
         raise HTTPException(status_code=502, detail="大模型未返回作文内容")
 
+    strategy, essay = _parse_model_output(model_output)
+
+    actual_word_count = _count_words(essay)
+    word_check = _word_check(actual_word_count, req.target_word_count)
+
+    length_revision: dict[str, object] = {
+        "attempted": False,
+        "applied": False,
+        "before": actual_word_count,
+        "after": actual_word_count,
+        "attempts": [],
+    }
+    revision_warning = None
+    if not word_check["passed"]:
+        length_revision["attempted"] = True
+        attempts = length_revision["attempts"]
+        assert isinstance(attempts, list)
+        for attempt_number in range(1, 3):
+            if word_check["passed"]:
+                break
+            before_revision = actual_word_count
+            attempt_info: dict[str, object] = {
+                "number": attempt_number,
+                "before": before_revision,
+                "applied": False,
+            }
+            try:
+                revision_response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "你负责对高考作文进行有限的篇幅调整。"
+                                "必须保留原文核心内容，并且只返回修订后的完整正文。"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": build_length_revision_prompt(
+                                topic,
+                                essay,
+                                actual_word_count=actual_word_count,
+                                target_word_count=req.target_word_count,
+                                minimum_word_count=int(word_check["minimum"]),
+                                maximum_word_count=int(word_check["maximum"]),
+                            ),
+                        },
+                    ],
+                    temperature=0.5,
+                    max_tokens=2048,
+                )
+                revision_output = revision_response.choices[0].message.content or ""
+                _, revised_essay = _parse_model_output(revision_output)
+                revised_word_count = _count_words(revised_essay)
+                revised_check = _word_check(revised_word_count, req.target_word_count)
+                attempt_info["candidate"] = revised_word_count
+                attempt_info["status"] = revised_check["status"]
+                is_closer = abs(revised_word_count - req.target_word_count) < abs(
+                    actual_word_count - req.target_word_count
+                )
+                if revised_essay.strip() and (revised_check["passed"] or is_closer):
+                    essay = revised_essay
+                    actual_word_count = revised_word_count
+                    word_check = revised_check
+                    attempt_info["applied"] = True
+                    length_revision["applied"] = True
+                    length_revision["after"] = actual_word_count
+            except Exception:  # noqa: BLE001
+                attempt_info["status"] = "model_call_failed"
+            attempts.append(attempt_info)
+
+        if not word_check["passed"]:
+            revision_warning = "作文已生成，但两次自动调整后字数仍未达到程序要求"
+
     record = None
-    warning = None
+    warning = revision_warning
     try:
         record = create_essay(
             auth.token,
@@ -322,16 +474,25 @@ def generate(
             topic=topic,
             title=_title_from_essay(essay),
             essay=essay,
-            word_count=_count_words(essay),
+            word_count=actual_word_count,
         )
     except (SupabaseConfigurationError, SupabaseAPIError) as exc:
-        warning = f"作文已生成，但保存到历史记录失败：{exc.detail}"
+        save_warning = f"作文已生成，但保存到历史记录失败：{exc.detail}"
+        warning = f"{warning}；{save_warning}" if warning else save_warning
 
     return {
         "essay": essay,
         "record": record,
         "saved": record is not None,
         "warning": warning,
+        "writing_requirements": {
+            "material_provided": bool(material),
+            "genre": req.genre,
+            "target_word_count": req.target_word_count,
+        },
+        "word_check": word_check,
+        "length_revision": length_revision,
+        "strategy": strategy,
     }
 
 
@@ -342,6 +503,30 @@ def essays(auth: AuthContext = Depends(current_auth)) -> dict[str, object]:
     except (SupabaseConfigurationError, SupabaseAPIError) as exc:
         raise _service_error(exc) from exc
     return {"items": rows}
+
+
+@app.post("/api/essays")
+def save_existing_essay(
+    req: EssayCreateRequest,
+    auth: AuthContext = Depends(current_auth),
+) -> dict[str, object]:
+    """Persist an already generated essay without calling the model again."""
+    topic = req.topic.strip()
+    essay = req.essay.strip()
+    if not topic or not essay:
+        raise HTTPException(status_code=422, detail="作文题目和正文不能为空")
+    try:
+        row = create_essay(
+            auth.token,
+            user_id=auth.user.id,
+            topic=topic,
+            title=_title_from_essay(essay),
+            essay=essay,
+            word_count=_count_words(essay),
+        )
+    except (SupabaseConfigurationError, SupabaseAPIError) as exc:
+        raise _service_error(exc) from exc
+    return {"record": row}
 
 
 @app.patch("/api/essays")
