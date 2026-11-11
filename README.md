@@ -160,7 +160,7 @@ vercel --prod
 
 ![系统首页](./screenshots/home.png)
 
-输入“青年理想与社会发展”材料后，由 DeepSeek 生成并自动保存作文。结果区同时显示写作策略、程序字数核验、保存状态和 TXT 下载入口：
+输入作文题目及作文材料后，由 DeepSeek 生成并自动保存作文。结果区同时显示写作策略、程序字数核验、保存状态和 TXT 下载入口：
 
 ![生成结果](./screenshots/result.png)
 
